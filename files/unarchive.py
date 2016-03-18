@@ -59,6 +59,11 @@ options:
     choices: [ "yes", "no" ]
     default: "no"
     version_added: "2.0"
+  extra_opts:
+    description:
+      - Additional arguments to pass to the unarchive tool when decompressing an archive.
+    required: false
+    default: null
 author: "Dylan Martin (@pileofrogs)"
 todo:
     - detect changed/unchanged for .zip files
@@ -98,15 +103,18 @@ DIFFERENCE_RE = re.compile(r': (.*) differs$')
 # saving to a tempfile (64k)
 BUFSIZE = 65536
 
+
 class UnarchiveError(Exception):
     pass
+
 
 # class to handle .zip files
 class ZipArchive(object):
 
-    def __init__(self, src, dest, module):
+    def __init__(self, src, dest, extra_opts, module):
         self.src = src
         self.dest = dest
+        self.extra_opts = extra_opts
         self.module = module
         self.cmd_path = self.module.get_bin_path('unzip')
         self._files_in_archive = []
@@ -128,7 +136,7 @@ class ZipArchive(object):
         return dict(unarchived=False)
 
     def unarchive(self):
-        cmd = '%s -o "%s" -d "%s"' % (self.cmd_path, self.src, self.dest)
+        cmd = '%s %s -o "%s" -d "%s"' % (self.cmd_path, self.extra_opts, self.src, self.dest)
         rc, out, err = self.module.run_command(cmd)
         return dict(cmd=cmd, rc=rc, out=out, err=err)
 
@@ -145,9 +153,10 @@ class ZipArchive(object):
 # class to handle gzipped tar files
 class TgzArchive(object):
 
-    def __init__(self, src, dest, module):
+    def __init__(self, src, dest, extra_opts, module):
         self.src = src
         self.dest = dest
+        self.extra_opts = extra_opts
         self.module = module
         # Prefer gtar (GNU tar) as it supports the compression options -zjJ
         self.cmd_path = self.module.get_bin_path('gtar', None)
@@ -173,7 +182,7 @@ class TgzArchive(object):
         return self._files_in_archive
 
     def is_unarchived(self, mode, owner, group):
-        cmd = '%s -C "%s" --diff -%sf "%s"' % (self.cmd_path, self.dest, self.zipflag, self.src)
+        cmd = '%s %s -C "%s" --diff -%sf "%s"' % (self.cmd_path, self.extra_opts, self.dest, self.zipflag, self.src)
         rc, out, err = self.module.run_command(cmd)
         unarchived = (rc == 0)
         if not unarchived:
@@ -204,7 +213,7 @@ class TgzArchive(object):
         return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd)
 
     def unarchive(self):
-        cmd = '%s -x%sf "%s"' % (self.cmd_path, self.zipflag, self.src)
+        cmd = '%s %s -x%sf "%s"' % (self.cmd_path, self.extra_opts, self.zipflag, self.src)
         rc, out, err = self.module.run_command(cmd, cwd=self.dest)
         return dict(cmd=cmd, rc=rc, out=out, err=err)
 
@@ -224,30 +233,30 @@ class TgzArchive(object):
 
 # class to handle tar files that aren't compressed
 class TarArchive(TgzArchive):
-    def __init__(self, src, dest, module):
-        super(TarArchive, self).__init__(src, dest, module)
+    def __init__(self, src, dest, extra_opts, module):
+        super(TarArchive, self).__init__(src, dest, extra_opts, module)
         self.zipflag = ''
 
 
 # class to handle bzip2 compressed tar files
 class TarBzipArchive(TgzArchive):
-    def __init__(self, src, dest, module):
-        super(TarBzipArchive, self).__init__(src, dest, module)
+    def __init__(self, src, dest, extra_opts, module):
+        super(TarBzipArchive, self).__init__(src, dest, extra_opts, module)
         self.zipflag = 'j'
 
 
 # class to handle xz compressed tar files
 class TarXzArchive(TgzArchive):
-    def __init__(self, src, dest, module):
-        super(TarXzArchive, self).__init__(src, dest, module)
+    def __init__(self, src, dest, extra_opts, module):
+        super(TarXzArchive, self).__init__(src, dest, extra_opts, module)
         self.zipflag = 'J'
 
 
 # try handlers in order and return the one that works or bail if none work
-def pick_handler(src, dest, module):
+def pick_handler(src, dest, extra_opts, module):
     handlers = [TgzArchive, ZipArchive, TarArchive, TarBzipArchive, TarXzArchive]
     for handler in handlers:
-        obj = handler(src, dest, module)
+        obj = handler(src, dest, extra_opts, module)
         if obj.can_handle_archive():
             return obj
     module.fail_json(msg='Failed to find handler for "%s". Make sure the required command to extract the file is installed.' % src)
@@ -262,7 +271,8 @@ def main():
             dest              = dict(required=True, type='path'),
             copy              = dict(default=True, type='bool'),
             creates           = dict(required=False, type='path'),
-            list_files          = dict(required=False, default=False, type='bool'),
+            list_files        = dict(required=False, default=False, type='bool'),
+            extra_opts        = dict(required=False, default="", type='str'),
         ),
         add_file_common_args=True,
     )
@@ -271,6 +281,7 @@ def main():
     dest   = module.params['dest']
     copy   = module.params['copy']
     file_args = module.load_file_common_arguments(module.params)
+    extra_opts = module.params['extra_opts']
 
     # did tar file arrive?
     if not os.path.exists(src):
@@ -314,7 +325,7 @@ def main():
     if not os.path.isdir(dest):
         module.fail_json(msg="Destination '%s' is not a directory" % dest)
 
-    handler = pick_handler(src, dest, module)
+    handler = pick_handler(src, dest, extra_opts, module)
 
     res_args = dict(handler=handler.__class__.__name__, dest=dest, src=src)
 
